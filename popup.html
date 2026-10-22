@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VerificaVídeo - Fato ou Fake em Tempo Real</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo-area">
+        <div class="logo-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <polyline points="9 12 11 14 15 10"/>
+          </svg>
+        </div>
+        <div class="header-titles">
+          <h1>VerificaVídeo</h1>
+          <span class="subtitle">Checagem Contínua em Tempo Real</span>
+        </div>
+      </div>
+      <div id="modeBadge" class="badge badge-demo">Modo Demo</div>
+    </header>
+
+    <!-- Configuração de Chave de API Gemini -->
+    <section class="api-key-section">
+      <div class="api-key-header" id="toggleApiKeySection">
+        <div class="flex-align">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 2l-2 2m-1.5 1.5L14 9l-1.5-1.5M3 21l9-9m0 0l3 3m-3-3l-3-3"/>
+            <circle cx="7.5" cy="16.5" r="2.5"/>
+          </svg>
+          <span>Configurar Chave da API Gemini</span>
+        </div>
+        <svg id="chevronIcon" class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="6 9 12 15 18 9"></polyline>
+        </svg>
+      </div>
+
+      <div class="api-key-body" id="apiKeyBody">
+        <div class="input-group">
+          <input type="password" id="apiKeyInput" placeholder="Cole sua Gemini API Key (ex: AIzaSy...)" autocomplete="off">
+          <button id="togglePasswordVisibility" type="button" title="Mostrar/Ocultar chave" class="btn-icon">
+            <svg id="eyeIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+          </button>
+          <button id="saveApiKeyBtn" class="btn-primary-small">Salvar</button>
+        </div>
+        <p class="api-help-text">
+          Obtenha gratuitamente no <a href="https://aistudio.google.com" target="_blank" rel="noopener">Google AI Studio</a>. Cole aqui para ativar a IA.
+        </p>
+      </div>
+    </section>
+
+    <!-- Painel de Monitoramento Contínuo -->
+    <section class="control-panel">
+      <!-- Seletor de Intervalo (30s vs 1min) -->
+      <div class="interval-selector-row">
+        <span class="selector-label">Frequência da Checagem:</span>
+        <div class="interval-pills">
+          <button type="button" class="pill-btn active" id="btnInterval30" data-interval="30">30 Segundos</button>
+          <button type="button" class="pill-btn" id="btnInterval60" data-interval="60">1 Minuto</button>
+        </div>
+      </div>
+
+      <!-- Opção de Painel Flutuante no YouTube -->
+      <div class="hud-toggle-row">
+        <label class="checkbox-label">
+          <input type="checkbox" id="toggleHudCheckbox" checked>
+          <span>Exibir painel flutuante sobre o vídeo (HUD)</span>
+        </label>
+      </div>
+
+      <!-- Botão Principal de Iniciar/Parar -->
+      <button id="toggleStreamBtn" class="btn-cta btn-start">
+        <div class="btn-content">
+          <svg class="play-icon" width="17" height="17" viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="5 3 19 12 5 21 5 3"></polygon>
+          </svg>
+          <span id="btnText">Iniciar Monitoramento em Tempo Real</span>
+        </div>
+        <div id="btnSpinner" class="spinner hidden"></div>
+      </button>
+
+      <!-- Status de Monitoramento ao Vivo -->
+      <div id="liveStatusContainer" class="live-status-bar hidden">
+        <div class="pulse-indicator">
+          <span class="pulse-dot"></span>
+          <span class="live-text">AO VIVO</span>
+        </div>
+        <div class="countdown-text" id="countdownDisplay">Aguardando play no vídeo...</div>
+      </div>
+    </section>
+
+    <!-- Mensagens de Alerta/Status -->
+    <div id="statusAlert" class="alert-box hidden">
+      <span id="statusMessage"></span>
+    </div>
+
+    <!-- Barra de Ferramentas do Feed -->
+    <div class="feed-header">
+      <div class="feed-title">
+        <span>Histórico de Checagens</span>
+        <span id="checkCounter" class="counter-badge">0</span>
+      </div>
+      <button id="clearHistoryBtn" class="btn-text" title="Limpar histórico de análises">Limpar</button>
+    </div>
+
+    <!-- Feed de Checagens (Timeline) -->
+    <main id="timelineFeed" class="timeline-container">
+      <!-- Mensagem quando vazio -->
+      <div id="emptyFeedState" class="empty-state">
+        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="12" cy="12" r="10"></circle>
+          <polyline points="12 6 12 12 16 14"></polyline>
+        </svg>
+        <p>Nenhuma checagem realizada ainda.</p>
+        <span class="empty-hint">Clique em <b>Iniciar Monitoramento</b> acima para checar o vídeo a cada 30 segundos com links diretos das fontes.</span>
+      </div>
+    </main>
+
+    <!-- Rodapé -->
+    <footer class="app-footer">
+      <span>Certifique-se de ligar as legendas (CC) no player do YouTube.</span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
