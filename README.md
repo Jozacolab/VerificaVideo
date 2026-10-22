@@ -1,5 +1,6 @@
 # VerificaVídeo: Fato ou Fake em Tempo Real 🔍🎬
 
+
 [![Manifest V3](https://img.shields.io/badge/Manifest-V3-blue.svg)](https://developer.chrome.com/docs/extensions/mv3/intro/)
 [![Google Gemini API](https://img.shields.io/badge/AI-Google%20Gemini-8E75C4.svg)](https://ai.google.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)

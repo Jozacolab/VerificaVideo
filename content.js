@@ -9,6 +9,7 @@
  * 4. Fatiamento por Janela de Tempo (30s ou 60s) configurável.
  */
 
+
 // Buffer com marcação temporal do vídeo
 const MAX_BUFFER_ITEMS = 300;
 let captionsWithTimestamps = [];

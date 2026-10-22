@@ -5,6 +5,7 @@
  * Permite dar "play" na checagem antes de dar play no vídeo, com suporte a 30s ou 1min.
  */
 
+
 document.addEventListener("DOMContentLoaded", async () => {
   // Elementos do DOM
   const toggleStreamBtn = document.getElementById("toggleStreamBtn");

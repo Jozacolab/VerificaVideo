@@ -8,6 +8,7 @@
  * 4. Delay mínimo de 3 segundos para sincronização e agregação de falas.
  */
 
+
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hora de cache
 
 const DEFAULT_FALLBACK_MODELS = [
