@@ -10,6 +10,7 @@
 
 
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hora de cache
+let offscreenCreationPromise = null;
 
 const DEFAULT_FALLBACK_MODELS = [
   "models/gemini-2.0-flash",
@@ -52,59 +53,200 @@ const KNOWN_FACTCHECK_URLS = {
   "tse": "https://www.tse.jus.br/fato-ou-boato"
 };
 
-/**
- * Normaliza qualquer retorno de fontes para objetos { nome, url } com URLs válidas
- */
-function normalizeSources(rawSources) {
-  if (!Array.isArray(rawSources) || rawSources.length === 0) {
-    return [
-      { nome: "Agência Lupa", url: "https://lupa.uol.com.br" },
-      { nome: "Aos Fatos", url: "https://aosfatos.org" }
-    ];
+const TRUSTED_BRAZILIAN_SOURCES = [
+  { nome: "Agência Lupa", dominio: "lupa.uol.com.br", tipo: "factcheck" },
+  { nome: "Aos Fatos", dominio: "aosfatos.org", tipo: "factcheck" },
+  { nome: "Projeto Comprova", dominio: "projetocomprova.com.br", tipo: "factcheck" },
+  { nome: "G1 Fato ou Fake", dominio: "g1.globo.com/fato-ou-fake", tipo: "factcheck" },
+  { nome: "Estadão Verifica", dominio: "estadao.com.br/estadao-verifica", tipo: "factcheck" },
+  { nome: "UOL Confere", dominio: "noticias.uol.com.br/confere", tipo: "factcheck" },
+  { nome: "Agência Brasil", dominio: "agenciabrasil.ebc.com.br", tipo: "noticias" },
+  { nome: "Portal Gov.br", dominio: "gov.br", tipo: "oficial" },
+  { nome: "IBGE", dominio: "ibge.gov.br", tipo: "economia" },
+  { nome: "Banco Central do Brasil", dominio: "bcb.gov.br", tipo: "economia" },
+  { nome: "TSE", dominio: "tse.jus.br", tipo: "eleicoes" },
+  { nome: "Fiocruz", dominio: "fiocruz.br", tipo: "saude" },
+  { nome: "Anvisa", dominio: "gov.br/anvisa", tipo: "saude" },
+  { nome: "Ministério da Saúde", dominio: "gov.br/saude", tipo: "saude" },
+  { nome: "Senado Federal", dominio: "senado.leg.br", tipo: "legislacao" },
+  { nome: "Câmara dos Deputados", dominio: "camara.leg.br", tipo: "legislacao" },
+  { nome: "STF", dominio: "portal.stf.jus.br", tipo: "justica" }
+];
+
+const SEARCH_STOP_WORDS = new Set([
+  "a", "ao", "aos", "aquela", "aquele", "as", "ate", "com", "como", "da", "das",
+  "de", "dela", "dele", "deles", "do", "dos", "e", "ela", "ele", "em", "entre",
+  "essa", "esse", "esta", "este", "foi", "foram", "ha", "isso", "isto", "ja",
+  "mais", "mas", "me", "mesmo", "na", "nas", "nem", "no", "nos", "o", "os",
+  "ou", "para", "pela", "pelas", "pelo", "pelos", "por", "qual", "quando",
+  "que", "quem", "se", "sem", "sua", "suas", "seu", "seus", "tambem", "um",
+  "uma", "umas", "uns", "voce", "seria", "estaria", "teria", "pode", "podem",
+  "segundo", "sobre", "fala", "falou", "diz", "disse", "afirma", "afirmou",
+  "alegacao", "alegacoes", "analisada", "analise", "verificada", "trecho",
+  "nao", "atras"
+]);
+
+function buildContextualSearchQuery(text) {
+  const terms = [];
+  const seen = new Set();
+  const words = String(text).match(/[\p{L}\p{N}]+/gu) || [];
+
+  for (const word of words) {
+    const normalized = word.toLocaleLowerCase("pt-BR")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "");
+    const isAcronym = word.length === 2 && word === word.toLocaleUpperCase("pt-BR");
+    if ((normalized.length < 3 && !isAcronym) || SEARCH_STOP_WORDS.has(normalized) || seen.has(normalized)) continue;
+    seen.add(normalized);
+    terms.push(word);
+    if (terms.length === 10) break;
   }
 
-  return rawSources.map((item) => {
-    // Caso 1: Objeto com nome e url já formatados
-    if (item && typeof item === "object") {
-      let url = (item.url || "").trim();
-      let nome = (item.nome || item.name || item.title || "Fonte Confiável").trim();
+  return terms.join(" ") || String(text).trim().slice(0, 80);
+}
 
-      if (!url.startsWith("http://") && !url.startsWith("https://")) {
-        url = url ? `https://${url}` : "https://lupa.uol.com.br";
-      }
-      return { nome, url };
-    }
+/**
+ * Prioriza buscas relacionadas à fala em fontes brasileiras e mantém citações diretas confiáveis.
+ */
+function normalizeSources(rawSources, claimText = "") {
+  const normalizedClaim = String(claimText)
+    .toLocaleLowerCase("pt-BR")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  const verificationSources = TRUSTED_BRAZILIAN_SOURCES.filter((source) => source.tipo === "factcheck");
+  const topicSources = [];
 
-    // Caso 2: String simples (ex: "https://aosfatos.org" ou "Agência Lupa")
-    if (typeof item === "string") {
-      const trimmed = item.trim();
-      if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-        return { nome: "Acessar Fonte Oficial", url: trimmed };
-      }
+  if (/saude|doenca|medic|vacina|hospital|anvisa|fiocruz|covid|cancer/.test(normalizedClaim)) {
+    topicSources.push(...TRUSTED_BRAZILIAN_SOURCES.filter((source) => source.tipo === "saude"));
+  }
+  if (/eleicao|eleitoral|urna|voto|tse|candidato|campanha eleitoral/.test(normalizedClaim)) {
+    topicSources.push(...TRUSTED_BRAZILIAN_SOURCES.filter((source) => source.tipo === "eleicoes"));
+  }
+  if (/pib|inflacao|economia|desemprego|juros|salario|emprego|ibge|imposto/.test(normalizedClaim)) {
+    topicSources.push(...TRUSTED_BRAZILIAN_SOURCES.filter((source) => source.tipo === "economia"));
+  }
+  if (/lei|projeto|congresso|senado|camara|deputado|votacao|legislacao/.test(normalizedClaim)) {
+    topicSources.push(...TRUSTED_BRAZILIAN_SOURCES.filter((source) => source.tipo === "legislacao"));
+  }
+  if (/stf|supremo|tribunal|julgamento|decisao judicial/.test(normalizedClaim)) {
+    topicSources.push(...TRUSTED_BRAZILIAN_SOURCES.filter((source) => source.tipo === "justica"));
+  }
 
-      // Procura URL conhecida por correspondência de texto
-      const lower = trimmed.toLowerCase();
-      for (const [key, knownUrl] of Object.entries(KNOWN_FACTCHECK_URLS)) {
-        if (lower.includes(key)) {
-          return { nome: trimmed, url: knownUrl };
+  const selectedSources = [
+    ...verificationSources.slice(0, 3),
+    ...(topicSources.length > 0
+      ? topicSources.slice(0, 2)
+      : TRUSTED_BRAZILIAN_SOURCES.filter((source) => source.tipo === "oficial" || source.tipo === "noticias"))
+  ].slice(0, 5);
+  const query = buildContextualSearchQuery(claimText);
+  const contextualSources = selectedSources.map((source) => ({
+    nome: `Pesquisar em ${source.nome}`,
+    url: `https://www.google.com/search?q=${encodeURIComponent(`${query} site:${source.dominio.split("/")[0]}`)}`
+  }));
+
+  const directSources = [];
+  if (Array.isArray(rawSources)) {
+    rawSources.forEach((item) => {
+      if (typeof item === "string") {
+        const matchedName = Object.keys(KNOWN_FACTCHECK_URLS)
+          .find((name) => item.toLocaleLowerCase("pt-BR").includes(name));
+        if (matchedName) {
+          const source = TRUSTED_BRAZILIAN_SOURCES.find((candidate) =>
+            candidate.nome.toLocaleLowerCase("pt-BR").includes(matchedName)
+          );
+          if (source) directSources.push({ nome: source.nome, url: KNOWN_FACTCHECK_URLS[matchedName] });
         }
+        return;
       }
 
-      // Fallback para busca direta de checagem no Google
-      return {
-        nome: trimmed,
-        url: `https://www.google.com/search?q=${encodeURIComponent(trimmed + " checagem de fatos")}`
-      };
-    }
+      if (!item || typeof item !== "object" || typeof item.url !== "string") return;
+      try {
+        const url = new URL(item.url);
+        if (url.protocol !== "https:") return;
+        const trusted = TRUSTED_BRAZILIAN_SOURCES.find((source) => {
+          const sourceHost = source.dominio.split("/")[0];
+          return url.hostname === sourceHost || url.hostname.endsWith(`.${sourceHost}`);
+        });
+        if (trusted) {
+          directSources.push({
+            nome: String(item.nome || item.name || trusted.nome).trim(),
+            url: url.toString()
+          });
+        }
+      } catch (error) {
+        console.warn("[VerificaVídeo] URL de fonte recomendada inválida; ignorada.", error);
+      }
+    });
+  }
 
-    return { nome: "Fonte Oficial", url: "https://aosfatos.org" };
+  const uniqueSources = new Map();
+  [...contextualSources, ...directSources].forEach((source) => {
+    if (!uniqueSources.has(source.url)) uniqueSources.set(source.url, source);
   });
+  return Array.from(uniqueSources.values()).slice(0, 7);
 }
 
 /**
  * Listener de Mensagens da Extensão
  */
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.target === "offscreen") return false;
+
+  if (request.action === "START_MICROPHONE_CAPTURE") {
+    startPersistentMicrophoneCapture(request)
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ success: false, error: error.message || "Não foi possível iniciar o microfone." }));
+    return true;
+  }
+
+  if (request.action === "STOP_MICROPHONE_CAPTURE") {
+    stopPersistentMicrophoneCapture()
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ success: false, error: error.message || "Não foi possível parar o microfone." }));
+    return true;
+  }
+
+  if (request.action === "UPDATE_MICROPHONE_INTERVAL") {
+    sendToOffscreen({ action: request.action, interval: request.interval })
+      .then((result) => sendResponse(result || { success: false }))
+      .catch((error) => sendResponse({ success: false, error: error.message || "Não foi possível atualizar o intervalo." }));
+    return true;
+  }
+
+  if (request.action === "GET_MICROPHONE_CAPTURE_STATUS") {
+    Promise.all([
+      hasOffscreenDocument(),
+      chrome.storage.local.get(["microphone_capture_state"])
+    ])
+      .then(async ([hasDocument, stored]) => {
+        const state = stored.microphone_capture_state || { running: false };
+        if (!hasDocument && state.running) {
+          const stoppedState = { ...state, running: false, status: "Captura parada." };
+          await chrome.storage.local.set({ microphone_capture_state: stoppedState });
+          sendResponse(stoppedState);
+          return;
+        }
+        sendResponse(state);
+      })
+      .catch((error) => sendResponse({ running: false, error: error.message }));
+    return true;
+  }
+
+  if (request.action === "MICROPHONE_CAPTURE_STATUS") {
+    chrome.storage.local.set({ microphone_capture_state: request.state }).catch((error) => {
+      console.warn("[VerificaVídeo] Não foi possível salvar o estado do microfone.", error);
+    });
+    if (request.state?.targetTabId) {
+      chrome.tabs.sendMessage(request.state.targetTabId, {
+        action: request.action,
+        status: request.status,
+        summary: request.state.summary,
+        remaining: request.state.remaining
+      }).catch(() => {});
+    }
+    return false;
+  }
+
   if (request.action === "START_FACT_CHECK") {
     handleFactCheckProcess(request.apiKey, request.minDelayMs || 3000)
       .then((result) => sendResponse({ success: true, data: result }))
@@ -113,17 +255,123 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === "EXECUTE_FACT_CHECK_DIRECT") {
-    handleDirectFactCheck(request.text, request.metadata, request.timeRange, request.apiKey)
+    handleDirectFactCheck(request.text, request.metadata, request.timeRange, request.apiKey, request.source)
       .then((result) => sendResponse({ success: true, data: result }))
       .catch((error) => sendResponse({ success: false, error: error.message || "Erro desconhecido" }));
     return true;
   }
 });
 
+async function startPersistentMicrophoneCapture(request) {
+  await ensureOffscreenDocument();
+  return sendToOffscreen({
+    action: "START_MICROPHONE_CAPTURE",
+    interval: request.interval,
+    targetTabId: request.targetTabId || null
+  });
+}
+
+async function stopPersistentMicrophoneCapture() {
+  const result = await sendToOffscreen({ action: "STOP_MICROPHONE_CAPTURE" });
+  if (result) return result;
+  await chrome.storage.local.set({
+    microphone_capture_state: {
+      running: false,
+      status: "Captura pelo microfone parada.",
+      summary: "",
+      remaining: null,
+      targetTabId: null
+    }
+  });
+  return { success: true };
+}
+
+async function ensureOffscreenDocument() {
+  if (await hasOffscreenDocument()) return;
+  if (!offscreenCreationPromise) {
+    offscreenCreationPromise = chrome.offscreen.createDocument({
+      url: "offscreen.html",
+      reasons: ["USER_MEDIA"],
+      justification: "Manter o reconhecimento de fala do microfone ativo enquanto o popup estiver fechado."
+    }).finally(() => {
+      offscreenCreationPromise = null;
+    });
+  }
+  await offscreenCreationPromise;
+}
+
+async function hasOffscreenDocument() {
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: ["OFFSCREEN_DOCUMENT"],
+    documentUrls: [chrome.runtime.getURL("offscreen.html")]
+  });
+  return contexts.length > 0;
+}
+
+async function sendToOffscreen(message) {
+  if (!await hasOffscreenDocument()) return null;
+  return chrome.runtime.sendMessage({ ...message, target: "offscreen" });
+}
+
+chrome.webNavigation.onCommitted.addListener((details) => {
+  if (details.frameId !== 0 || isYouTubeUrl(details.url)) return;
+  switchTranscriptionToMicrophone(details.tabId);
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  switchTranscriptionToMicrophone(tabId);
+});
+
+function isYouTubeUrl(url) {
+  try {
+    const hostname = new URL(url).hostname;
+    return hostname === "youtube.com" || hostname.endsWith(".youtube.com");
+  } catch (error) {
+    return false;
+  }
+}
+
+async function switchTranscriptionToMicrophone(tabId) {
+  try {
+    const stored = await chrome.storage.local.get(["transcription_monitoring_session"]);
+    const session = stored.transcription_monitoring_session;
+    if (!session?.active || !session.fallbackToMicrophone || session.targetTabId !== tabId) return;
+
+    await chrome.storage.local.set({
+      transcription_monitoring_session: { active: false },
+      saved_capture_mode: "microphone"
+    });
+    const result = await startPersistentMicrophoneCapture({
+      interval: session.interval,
+      targetTabId: null
+    });
+    if (!result?.success) throw new Error(result?.error || "Não foi possível mudar a captura para o microfone.");
+  } catch (error) {
+    console.error("[VerificaVídeo] Não foi possível continuar a análise pelo microfone.", error);
+    const failureMessage = `Não foi possível continuar pelo microfone: ${error.message || "erro desconhecido"}`;
+    const failedState = {
+      running: false,
+      status: failureMessage,
+      error: failureMessage,
+      summary: "",
+      remaining: null,
+      targetTabId: null
+    };
+    await chrome.storage.local.set({
+      microphone_capture_state: failedState
+    });
+    chrome.runtime.sendMessage({
+      action: "MICROPHONE_CAPTURE_STATUS",
+      status: failureMessage,
+      state: failedState
+    }).catch(() => {});
+  }
+}
+
 /**
  * Processa a checagem enviada pelo motor contínuo do content.js
  */
-async function handleDirectFactCheck(text, metadata, timeRange, providedApiKey) {
+async function handleDirectFactCheck(text, metadata, timeRange, providedApiKey, source = "youtube_legendas") {
   let apiKey = providedApiKey;
   if (!apiKey) {
     const storage = await chrome.storage.local.get(["geminiApiKey"]);
@@ -132,9 +380,9 @@ async function handleDirectFactCheck(text, metadata, timeRange, providedApiKey) 
 
   let result;
   if (apiKey && apiKey.trim().length > 10) {
-    result = await executeResilientFactCheck(text, metadata, apiKey.trim(), "monitoramento_tempo_real", timeRange);
+    result = await executeResilientFactCheck(text, metadata, apiKey.trim(), source, timeRange);
   } else {
-    result = await simulateFactCheck(text, metadata, "monitoramento_tempo_real", timeRange);
+    result = await simulateFactCheck(text, metadata, source, timeRange);
   }
 
   // Persiste no histórico da timeline
@@ -200,7 +448,7 @@ async function handleFactCheckProcess(providedApiKey, minDelayMs = 3000) {
     throw new Error(extractionResponse?.error || "Nenhuma legenda detectada nos últimos 30 segundos.");
   }
 
-  const { text, metadata, source, timeRange } = extractionResponse;
+  const { text, metadata, source = "youtube_legendas", timeRange } = extractionResponse;
 
   let apiKey = providedApiKey;
   if (!apiKey) {
@@ -349,11 +597,12 @@ DIRETRIZ FUNDAMENTAL:
 NÃO classifique tudo como "DUVIDOSO". Avalie o teor real da frase. Se a pessoa está falando a verdade sobre acontecimentos, fatos científicos, dados ou experiências reais sem mentir, marque como "FATO". Reserve "DUVIDOSO" apenas para quando houver real ambiguidade, rumor não comprovado ou manipulação evidente.
 
 EXIGÊNCIA ESTRITA SOBRE AS FONTES:
-Para cada item em "fontes_recomendadas", você DEVE fornecer o nome e um link direto real (começando com https://) para a agência de checagem, portal de notícias confiável ou órgão público oficial (ex: https://lupa.uol.com.br, https://aosfatos.org, https://g1.globo.com/fato-ou-fake, https://www.who.int, https://www.ibge.gov.br).
+Recomende fontes que tratem diretamente da alegação, priorizando fontes primárias brasileiras (órgãos oficiais e dados públicos) e, para checagem independente, Agência Lupa, Aos Fatos, Projeto Comprova e G1 Fato ou Fake. Prefira links de artigos, dados ou documentos específicos que sustentem a análise; não use a página inicial de uma instituição como se comprovasse a fala. Nunca invente URLs ou títulos de matérias. Se não souber um link específico confiável, retorne uma lista vazia: o aplicativo fornecerá buscas contextuais em fontes brasileiras para consulta.
 
 Responda OBRIGATORIAMENTE em JSON:
 {
   "veredito": "FATO" | "FAKE" | "DUVIDOSO",
+  "confianca": número inteiro de 0 a 100,
   "afirmacao_destaque": "Citação direta ou resumo da fala verificada",
   "justificativa": "Explicação analítica, clara e fundamentada do porquê recebeu esse veredito",
   "fontes_recomendadas": [
@@ -362,11 +611,14 @@ Responda OBRIGATORIAMENTE em JSON:
       "url": "https://link-direto-da-fonte..."
     }
   ]
-}`;
+}
+
+O campo "confianca" representa sua confiança nesta classificação, considerando a clareza da alegação, a qualidade das evidências e das fontes verificáveis. Não o apresente como probabilidade matemática de a afirmação ser verdadeira. Reduza a confiança quando faltarem evidências confiáveis, quando a fala for ambígua ou quando não houver fontes específicas que a confirmem.`;
 
   const userPrompt = `
 VÍDEO: "${metadata.title}" (${metadata.channel})
 TRECHO TEMPORAL: ${timeRange || metadata.currentTime}
+ORIGEM: ${source === "microfone" ? "Transcrição do microfone" : "Legendas do YouTube"}
 FALA EXTRAÍDA:
 """
 ${transcriptText}
@@ -432,10 +684,15 @@ ${transcriptText}
         timestamp: new Date().toLocaleTimeString(),
         timeRange: timeRange || metadata.currentTime,
         veredito: normalizeVerdict(parsed.veredito),
+        confianca: normalizeConfidence(parsed.confianca),
         afirmacao_destaque: parsed.afirmacao_destaque || "Fala sob análise.",
         justificativa: parsed.justificativa || "Análise concluída com base na transcrição recente.",
-        fontes_recomendadas: normalizeSources(parsed.fontes_recomendadas),
+        fontes_recomendadas: normalizeSources(
+          parsed.fontes_recomendadas,
+          parsed.afirmacao_destaque || transcriptText
+        ),
         texto_analisado: transcriptText,
+        origem: source,
         metadata: metadata,
         modo: "gemini_api",
         modelo_usado: cleanModel
@@ -493,9 +750,18 @@ async function simulateFactCheck(transcriptText, metadata, source, timeRange) {
     veredito: veredito,
     afirmacao_destaque: afirmacao,
     justificativa: justificativa,
-    fontes_recomendadas: fontes,
+    fontes_recomendadas: normalizeSources(fontes, transcriptText),
     texto_analisado: transcriptText,
+    origem: source,
+    confianca: null,
     metadata: metadata,
     modo: "demonstracao"
   };
+}
+
+function normalizeConfidence(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const confidence = Number(value);
+  if (!Number.isFinite(confidence)) return null;
+  return Math.max(0, Math.min(100, Math.round(confidence)));
 }

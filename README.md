@@ -6,9 +6,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Status: Open Source](https://img.shields.io/badge/Open%20Source-%E2%99%A5-red.svg)](https://github.com/)
 
-Extensão *open-source* para o Google Chrome (**Manifest V3**) que realiza **auditoria e checagem de fatos contínua em tempo real** de vídeos e transmissões ao vivo no YouTube utilizando a inteligência artificial do **Google Gemini**.
+Extensão *open-source* para o Google Chrome (**Manifest V3**) que realiza **checagem de falas em tempo real** de vídeos e transmissões ao vivo no YouTube (via legendas) ou pelo microfone, utilizando a inteligência artificial do **Google Gemini**.
 
-A extensão monitora as legendas a cada **30 segundos ou 1 minuto**, classifica cada alegação falada entre **`[FATO]`**, **`[FAKE]`** ou **`[DUVIDOSO]`**, e fornece **links diretos e clicáveis** para agências jornalísticas oficiais de checagem.
+A extensão analisa as falas em blocos de **30 segundos ou 1 minuto**, classifica cada alegação entre **`[FATO]`**, **`[FAKE]`** ou **`[DUVIDOSO]`**, estima a confiança da classificação quando a IA está ativa e recomenda fontes para consulta.
+
+É necessário usar o **Google Chrome 116 ou superior** para manter o reconhecimento do microfone em segundo plano.
 
 ---
 
@@ -17,6 +19,7 @@ A extensão monitora as legendas a cada **30 segundos ou 1 minuto**, classifica 
 - [Visão Geral](#-visão-geral)
 - [Fluxograma de Funcionamento e Calibração](#-fluxograma-de-funcionamento-e-calibração)
 - [Critérios de Calibração (Fato, Fake ou Duvidoso)](#-critérios-de-calibração-fato-fake-ou-duvidoso)
+- [Instalação pelo ZIP e configuração da API](#-instalação-pelo-zip-e-configuração-da-api)
 - [Guia Rápido de Instalação (Passo a Passo)](#-guia-rápido-de-instalação-passo-a-passo)
 - [Como Configurar a Chave da API Gemini](#-como-configurar-a-chave-da-api-gemini)
 - [Como Usar no YouTube](#-como-usar-no-youtube)
@@ -27,24 +30,44 @@ A extensão monitora as legendas a cada **30 segundos ou 1 minuto**, classifica 
 
 ---
 
+## 📦 Instalação pelo ZIP e configuração da API
+
+**Link para baixar:** cole aqui o link do arquivo ZIP.
+
+1. Baixe e extraia o ZIP. Não selecione o arquivo ZIP no Chrome.
+2. No Chrome, abra `chrome://extensions/` e ative **Modo do desenvolvedor**.
+3. Clique em **Carregar sem compactação** e selecione a pasta extraída que contém o arquivo `manifest.json`.
+4. Para ativar a IA, abra [Google AI Studio](https://aistudio.google.com), faça login e crie uma chave em **Get API key** > **Create API key**.
+5. Clique no ícone do VerificaVídeo, abra **Configurar Chave da API Gemini**, cole sua chave e clique em **Salvar**.
+
+**Importante:** cada pessoa deve criar e usar a própria chave da API. Não compartilhe sua chave com outras pessoas.
+
+---
+
 ## 💡 Visão Geral
 
-Ao assistir a vídeos jornalísticos, entrevistas, podcasts ou debates políticos no YouTube, o **VerificaVídeo**:
-1. Captura o áudio transcrito em blocos temporais (30s ou 1min).
-2. Pausa automaticamente se você pausar o vídeo e retoma assim que der play.
-3. Exibe um **Painel Flutuante (HUD)** diretamente sobre o vídeo no YouTube.
-4. Gera um **Feed Histórico (Timeline)** no popup que **nunca se perde** ao fechar a janela.
-5. Inclui **links diretos para fontes oficiais** (Agência Lupa, Aos Fatos, G1 Fato ou Fake, OMS, IBGE, etc.).
+O **VerificaVídeo** permite checar falas de duas formas:
+1. Captura legendas de vídeos do YouTube em blocos temporais (30s ou 1min).
+2. Usa o microfone para transcrever uma fala próxima e analisar os trechos no mesmo intervalo.
+3. Exibe o veredito e o nível de confiança estimado pela IA, quando a análise Gemini está ativa.
+4. Pausa automaticamente a checagem do YouTube se o vídeo for pausado e retoma quando ele voltar a tocar.
+5. Exibe um **Painel Flutuante (HUD)** sobre o vídeo no YouTube.
+6. Gera um **Feed Histórico (Timeline)** no popup que **nunca se perde** ao fechar a janela.
+7. Inclui links para fontes recomendadas para consulta (Agência Lupa, Aos Fatos, G1 Fato ou Fake, OMS, IBGE, etc.).
+
+> **Sobre o percentual:** o percentual exibido é uma estimativa de confiança da IA na classificação, não uma probabilidade matemática nem uma garantia de que a fala seja verdadeira. Uma checagem confiável depende de evidências e fontes específicas; confira os links e a justificativa. No modo de demonstração ou contingência, o percentual fica indisponível em vez de ser inventado.
 
 ---
 
 ## 📊 Fluxograma de Funcionamento e Calibração
 
-O diagrama abaixo ilustra todo o ciclo de vida: desde a captura das legendas no player até o processamento na IA, calibração do veredito e exibição ao usuário.
+O diagrama abaixo ilustra o fluxo desde a captura das legendas ou do microfone até o processamento na IA e a exibição ao usuário.
 
 ```mermaid
 flowchart TD
-    subgraph CAPTURA["1. Captura e Buffer Temporal (content.js)"]
+    subgraph CAPTURA["1. Captura de Legendas ou Microfone"]
+        MIC["Reconhecimento de fala pt-BR na aba do microfone"]
+        MIC --> IM["Trecho transcrito a cada 30s ou 1min"]
         A["Vídeo do YouTube em Reprodução"] --> B{"O vídeo está pausado?"}
         B -->|Sim| C["Pausa Temporizador / Aguarda Play"]
         B -->|Não| D["MutationObserver captura Legendas (CC)"]
@@ -65,8 +88,9 @@ flowchart TD
         O --> P{"Resposta da API Google"}
         P -->|503 Sobrecarga ou 429 Quota| Q["Failover Automático para próximo modelo da lista"]
         Q --> O
-        P -->|Sucesso| R["Recebe JSON com Veredito e Fontes"]
+        P -->|Sucesso| R["Recebe JSON com Veredito, Confiança estimada e Fontes"]
         L --> R
+        IM --> J
     end
 
     subgraph CALIBRACAO["3. Calibração e Tomada de Decisão"]
@@ -78,7 +102,7 @@ flowchart TD
         U --> X["Função normalizeVerdict (Trata sinônimos da IA)"]
         V --> X
         W --> X
-        X --> Y["Validação e Injeção de Links Diretos (URLs https://)"]
+        X --> Y["Links específicos verificados ou buscas contextuais em fontes brasileiras"]
     end
 
     subgraph EXIBICAO["4. Exibição e Persistência"]
@@ -157,10 +181,9 @@ Qualquer pessoa pode rodar o projeto em menos de 2 minutos diretamente no Chrome
 
 1. Abra qualquer vídeo ou live no [YouTube](https://www.youtube.com).
 2. **Ative as Legendas (CC):** clique no botão **"CC"** no player do YouTube para que as falas sejam legendadas.
-3. Abra a extensão **VerificaVídeo**.
+3. Abra a extensão **VerificaVídeo** e selecione **"Transcrição (legendas CC)"**.
 4. Escolha a frequência desejada: **`30 Segundos`** ou **`1 Minuto`**.
-5. Clique em:  
-   👉 **"Iniciar Monitoramento em Tempo Real"**.
+5. Clique em **"Iniciar transcrição"**.
 6. **Dê play no vídeo:**
    * Você pode dar play na análise antes e depois dar play no vídeo.
    * A extensão detecta o estado do player: se o vídeo for pausado, ela aguarda sem gastar chamadas desnecessárias.
@@ -169,6 +192,24 @@ Qualquer pessoa pode rodar o projeto em menos de 2 minutos diretamente no Chrome
    * No **Feed Cronológico (Timeline)** dentro da janela da extensão, com links diretos para as fontes.
 8. **Persistência dos Resultados:**
    * As análises **nunca somem ao fechar a janela**. Elas só são reiniciadas se você clicar em iniciar uma nova checagem ou no botão **"Limpar"**.
+
+### Escolher o microfone como fonte
+
+1. Abra a extensão e selecione **"Microfone"** como fonte da fala.
+2. Escolha o intervalo da análise e clique em **"Iniciar análise pelo microfone"** nesta janela.
+3. Autorize o acesso ao microfone quando o Chrome solicitar e fale em português perto do dispositivo.
+4. A transcrição resumida aparece nesta janela e no HUD; os resultados das análises aparecem no histórico.
+5. Clique em **"Parar análise pelo microfone"** para encerrar. A captura continua em segundo plano mesmo se você fechar o popup; reabra a extensão para acompanhar o estado ou parar.
+
+O reconhecimento depende do suporte a `SpeechRecognition` no navegador e pode exigir conexão com a internet. A captura só começa após clicar no botão desta janela e conceder a permissão do microfone. Se houver uma guia do YouTube ativa, o HUD mostra o timer e um resumo do que foi capturado, mas não controla o microfone. O Chrome pode processar o áudio usando seus serviços de reconhecimento; a extensão não grava nem armazena áudio. A transcrição é enviada ao Gemini quando a chave de API está configurada.
+
+No modo de transcrição das legendas, a sessão continua ativa se você fechar o popup. Ao sair do YouTube ou fechar a guia monitorada, a extensão muda para o microfone e continua analisando até você clicar em parar. O Chrome pode pedir permissão para o microfone nessa mudança. Se a permissão for negada ou o reconhecimento de fala não estiver disponível, a extensão informa que não conseguiu continuar.
+
+### Como interpretar o percentual
+
+Cada resultado pode mostrar **"Confiança estimada da análise"**, fornecida pela IA com base na clareza da fala e nas evidências disponíveis. Esse número mede a confiança do modelo na própria classificação (FATO, FAKE ou DUVIDOSO), não a veracidade objetiva da fala. A IA pode errar ou não dispor de fontes atuais; consulte a justificativa e valide as fontes.
+
+O HUD mantém visível um timer `MM:SS` com o tempo restante até a próxima análise; no modo de transcrição, a contagem pausa enquanto o vídeo está pausado. Os links do histórico e do HUD priorizam buscas por termos-chave da alegação em verificadores brasileiros (Agência Lupa, Aos Fatos, Projeto Comprova) e em fontes primárias selecionadas pelo assunto, como IBGE/Banco Central, TSE, Anvisa/Fiocruz, Senado/Câmara ou STF. As buscas usam o domínio das fontes, sem restringir a uma seção ou caminho específico, para reduzir resultados vazios. G1 Fato ou Fake, Estadão Verifica e UOL Confere também são aceitos como fontes diretas recomendadas pela IA. Os links identificados como **"Pesquisar em..."** são consultas contextualizadas, não afirmações de que a página encontrada já confirmou a fala. No modo de demonstração/contingência, não é exibido percentual.
 
 ---
 
@@ -213,7 +254,11 @@ Check_Fatos_Tempo_Real/
 * Certifique-se de que o botão **CC (Legendas)** está ligado no player do YouTube.
 * Deixe o vídeo reproduzir por alguns segundos para que algumas frases apareçam na tela. Trechos apenas com música instrumental não possuem falas para auditoria.
 
-### 3. Minha chave de API é compartilhada com alguém?
+### 3. O microfone não iniciou ou não transcreveu:
+* Confirme a permissão de microfone do Chrome para a extensão e verifique se outro aplicativo não está usando o dispositivo.
+* Use o Google Chrome atualizado e confirme que há conexão com a internet; o reconhecimento de fala depende do suporte de voz do navegador.
+
+### 4. Minha chave de API é compartilhada com alguém?
 **Não.** A chave é salva apenas no armazenamento local criptografado do seu próprio navegador Google Chrome (`chrome.storage.local`). As requisições saem diretamente do seu navegador para os servidores oficiais da Google API, sem intermediários.
 
 ---

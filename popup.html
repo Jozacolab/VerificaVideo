@@ -59,9 +59,29 @@
 
     <!-- Painel de Monitoramento Contínuo -->
     <section class="control-panel">
-      <!-- Seletor de Intervalo (30s vs 1min) -->
+      <fieldset class="capture-mode-fieldset">
+        <legend>Como deseja capturar a fala?</legend>
+        <div class="capture-mode-options">
+          <label class="capture-mode-option">
+            <input type="radio" name="captureMode" id="captureModeTranscript" value="transcript" checked>
+            <span class="capture-mode-title">Transcrição (legendas CC)</span>
+            <span class="capture-mode-hint">Lê as legendas do vídeo no YouTube.</span>
+          </label>
+          <label class="capture-mode-option">
+            <input type="radio" name="captureMode" id="captureModeMicrophone" value="microphone">
+            <span class="capture-mode-title">Microfone</span>
+            <span class="capture-mode-hint">Transcreve fala pelo microfone.</span>
+          </label>
+        </div>
+      </fieldset>
+
+      <p id="captureModeDescription" class="capture-mode-description">
+        Selecione uma opção para começar.
+      </p>
+
+      <!-- Frequência dos trechos analisados -->
       <div class="interval-selector-row">
-        <span class="selector-label">Frequência da Checagem:</span>
+        <span class="selector-label">Frequência da análise:</span>
         <div class="interval-pills">
           <button type="button" class="pill-btn active" id="btnInterval30" data-interval="30">30 Segundos</button>
           <button type="button" class="pill-btn" id="btnInterval60" data-interval="60">1 Minuto</button>
@@ -95,6 +115,10 @@
         </div>
         <div class="countdown-text" id="countdownDisplay">Aguardando play no vídeo...</div>
       </div>
+      <div id="microphoneCapturePreview" class="microphone-capture-preview hidden">
+        <p id="microphoneCaptureStatus" role="status">Microfone desligado.</p>
+        <p id="microphoneTranscriptPreview">A fala reconhecida aparecerá aqui.</p>
+      </div>
     </section>
 
     <!-- Mensagens de Alerta/Status -->
@@ -120,13 +144,13 @@
           <polyline points="12 6 12 12 16 14"></polyline>
         </svg>
         <p>Nenhuma checagem realizada ainda.</p>
-        <span class="empty-hint">Clique em <b>Iniciar Monitoramento</b> acima para checar o vídeo a cada 30 segundos com links diretos das fontes.</span>
+        <span class="empty-hint">Escolha transcrição ou microfone no painel acima para iniciar uma checagem.</span>
       </div>
     </main>
 
     <!-- Rodapé -->
     <footer class="app-footer">
-      <span>Certifique-se de ligar as legendas (CC) no player do YouTube.</span>
+      <span>No modo microfone, a captura continua em segundo plano até você parar.</span>
     </footer>
   </div>
 

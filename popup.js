@@ -13,10 +13,17 @@ document.addEventListener("DOMContentLoaded", async () => {
   const btnSpinner = document.getElementById("btnSpinner");
   const liveStatusContainer = document.getElementById("liveStatusContainer");
   const countdownDisplay = document.getElementById("countdownDisplay");
+  const microphoneCapturePreview = document.getElementById("microphoneCapturePreview");
+  const microphoneCaptureStatus = document.getElementById("microphoneCaptureStatus");
+  const microphoneTranscriptPreview = document.getElementById("microphoneTranscriptPreview");
 
   const btnInterval30 = document.getElementById("btnInterval30");
   const btnInterval60 = document.getElementById("btnInterval60");
   const toggleHudCheckbox = document.getElementById("toggleHudCheckbox");
+  const captureModeTranscript = document.getElementById("captureModeTranscript");
+  const captureModeMicrophone = document.getElementById("captureModeMicrophone");
+  const captureModeDescription = document.getElementById("captureModeDescription");
+  const hudToggleRow = document.querySelector(".hud-toggle-row");
 
   const toggleApiKeySection = document.getElementById("toggleApiKeySection");
   const apiKeyBody = document.getElementById("apiKeyBody");
@@ -36,6 +43,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Estado local
   let isMonitoring = false;
+  let captureMode = "transcript";
   let selectedInterval = 30; // 30 ou 60 segundos
   let timelineItems = [];
 
@@ -44,7 +52,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     "geminiApiKey",
     "timeline_checks",
     "saved_interval",
-    "show_hud_pref"
+    "show_hud_pref",
+    "saved_capture_mode"
   ]);
 
   if (stored.geminiApiKey) {
@@ -66,6 +75,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     toggleHudCheckbox.checked = false;
   }
 
+  setCaptureMode(stored.saved_capture_mode === "microphone" ? "microphone" : "transcript");
+
   if (Array.isArray(stored.timeline_checks) && stored.timeline_checks.length > 0) {
     timelineItems = stored.timeline_checks;
     renderAllTimelineItems();
@@ -85,6 +96,29 @@ document.addEventListener("DOMContentLoaded", async () => {
     notifyIntervalChange(60);
   });
 
+  captureModeTranscript.addEventListener("change", () => {
+    if (captureModeTranscript.checked) setCaptureMode("transcript");
+  });
+
+  captureModeMicrophone.addEventListener("change", () => {
+    if (captureModeMicrophone.checked) setCaptureMode("microphone");
+  });
+
+  function setCaptureMode(mode) {
+    captureMode = mode;
+    captureModeTranscript.checked = mode === "transcript";
+    captureModeMicrophone.checked = mode === "microphone";
+    captureModeTranscript.disabled = isMonitoring;
+    captureModeMicrophone.disabled = isMonitoring;
+    hudToggleRow.classList.remove("hidden");
+    captureModeDescription.textContent = mode === "microphone"
+      ? "Clique em iniciar análise para transcrever pelo microfone. A captura continua mesmo com esta janela fechada."
+      : "Usa as legendas (CC) do YouTube; ao sair da página, muda para o microfone até você parar.";
+    microphoneCapturePreview.classList.toggle("hidden", mode !== "microphone");
+    chrome.storage.local.set({ saved_capture_mode: mode });
+    updateButtonUI(isMonitoring);
+  }
+
   function setIntervalSelection(seconds) {
     selectedInterval = seconds;
     chrome.storage.local.set({ saved_interval: seconds });
@@ -92,16 +126,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (seconds === 60) {
       btnInterval60.classList.add("active");
       btnInterval30.classList.remove("active");
-      if (!isMonitoring) btnText.textContent = "Iniciar Monitoramento a cada 1min";
     } else {
       btnInterval30.classList.add("active");
       btnInterval60.classList.remove("active");
-      if (!isMonitoring) btnText.textContent = "Iniciar Monitoramento a cada 30s";
     }
+    updateButtonUI(isMonitoring);
   }
 
   async function notifyIntervalChange(seconds) {
-    if (isMonitoring) {
+    if (isMonitoring && captureMode === "microphone") {
+      chrome.runtime.sendMessage({ action: "UPDATE_MICROPHONE_INTERVAL", interval: seconds })
+        .catch((error) => console.warn("[VerificaVídeo] Não foi possível atualizar o intervalo.", error));
+    } else if (isMonitoring && captureMode === "transcript") {
       const tab = await getActiveYouTubeTab();
       if (tab) {
         chrome.tabs.sendMessage(tab.id, {
@@ -153,23 +189,41 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // 7. Botão Principal (Iniciar / Parar Monitoramento)
   toggleStreamBtn.addEventListener("click", async () => {
-    const tab = await getActiveYouTubeTab();
-    if (!tab) {
-      showAlert("Por favor, abra um vídeo no YouTube primeiro.", "error");
-      return;
-    }
-
     if (isMonitoring) {
-      // Parar
+      if (captureMode === "microphone") {
+        await stopMicrophoneAnalysis();
+        return;
+      }
+      const tab = await getActiveYouTubeTab();
       isMonitoring = false;
       updateButtonUI(false);
-      chrome.tabs.sendMessage(tab.id, { action: "STOP_MONITORING" }).catch(() => {});
+      await chrome.storage.local.set({
+        transcription_monitoring_session: { active: false }
+      });
+      if (tab) chrome.tabs.sendMessage(tab.id, { action: "STOP_MONITORING" }).catch(() => {});
+    } else if (captureMode === "microphone") {
+      await startMicrophoneAnalysis();
     } else {
+      const tab = await getActiveYouTubeTab();
+      if (!tab) {
+        showAlert("Abra um vídeo no YouTube e ative as legendas (CC) para usar a transcrição.", "error");
+        return;
+      }
+
       // Iniciar uma nova análise: limpa as checagens da sessão anterior e inicia nova rodada
       timelineItems = [];
       await chrome.storage.local.remove(["timeline_checks"]);
       renderAllTimelineItems();
 
+      await chrome.storage.local.set({
+        transcription_monitoring_session: {
+          active: true,
+          interval: selectedInterval,
+          showHUD: toggleHudCheckbox.checked,
+          targetTabId: tab.id,
+          fallbackToMicrophone: true
+        }
+      });
       isMonitoring = true;
       updateButtonUI(true);
       countdownDisplay.textContent = "Monitoramento ativo! Dê play no vídeo...";
@@ -177,9 +231,13 @@ document.addEventListener("DOMContentLoaded", async () => {
       chrome.tabs.sendMessage(tab.id, {
         action: "START_MONITORING",
         interval: selectedInterval,
-        showHUD: toggleHudCheckbox.checked
-      }).catch((err) => {
+        showHUD: toggleHudCheckbox.checked,
+        fallbackToMicrophone: true
+      }).catch(async (err) => {
         showAlert("Erro ao iniciar na página do YouTube. Recarregue o vídeo.", "error");
+        await chrome.storage.local.set({ transcription_monitoring_session: { active: false } });
+        console.warn("[VerificaVídeo] Não foi possível iniciar a transcrição.", err);
+        isMonitoring = false;
         updateButtonUI(false);
       });
     }
@@ -193,8 +251,35 @@ document.addEventListener("DOMContentLoaded", async () => {
     showAlert("Histórico limpo.", "info");
   });
 
-  // 9. Ouvinte de mensagens em tempo real vindas do content.js e background.js
+  // 10. Ouvinte de mensagens em tempo real vindas do content.js e background.js
   chrome.runtime.onMessage.addListener((request) => {
+    if (request.action === "MICROPHONE_CAPTURE_STATUS") {
+      const state = request.state || {};
+      isMonitoring = Boolean(state.running);
+      if (state.running) {
+        captureMode = "microphone";
+        captureModeMicrophone.checked = true;
+        captureModeTranscript.checked = false;
+        microphoneCapturePreview.classList.remove("hidden");
+        microphoneCaptureStatus.textContent = request.status || state.status || "Microfone ativo.";
+        microphoneTranscriptPreview.textContent = state.summary || "Aguardando fala...";
+        countdownDisplay.textContent = Number.isFinite(state.remaining)
+          ? `Próxima análise em ${state.remaining}s (${state.interval}s)...`
+          : "Captura do microfone ativa.";
+      } else if (state.error) {
+        captureMode = "microphone";
+        captureModeMicrophone.checked = true;
+        captureModeTranscript.checked = false;
+        microphoneCapturePreview.classList.remove("hidden");
+        microphoneCaptureStatus.textContent = state.error;
+        showAlert(state.error, "error");
+      } else if (captureMode === "microphone") {
+        microphoneCaptureStatus.textContent = request.status || state.status || "Microfone desligado.";
+        countdownDisplay.textContent = "Captura parada.";
+      }
+      updateButtonUI(isMonitoring);
+    }
+
     if (request.action === "MONITORING_TICK") {
       isMonitoring = true;
       updateButtonUI(true);
@@ -211,10 +296,86 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
+  async function startMicrophoneAnalysis() {
+    microphoneCaptureStatus.textContent = "Iniciando captura persistente do microfone...";
+    hideAlert();
+    try {
+      const tab = await getActiveYouTubeTab();
+      const response = await chrome.runtime.sendMessage({
+        action: "START_MICROPHONE_CAPTURE",
+        interval: selectedInterval,
+        targetTabId: tab?.id || null
+      });
+      if (!response?.success) throw new Error(response?.error || "Não foi possível iniciar o microfone.");
+
+      timelineItems = [];
+      await chrome.storage.local.remove(["timeline_checks"]);
+      renderAllTimelineItems();
+      isMonitoring = true;
+      captureMode = "microphone";
+      updateButtonUI(true);
+      microphoneCaptureStatus.textContent = "Microfone ativo. Você pode fechar esta janela.";
+      countdownDisplay.textContent = `Próxima análise em ${selectedInterval}s...`;
+    } catch (error) {
+      isMonitoring = false;
+      updateButtonUI(false);
+      microphoneCaptureStatus.textContent = error.message || "Não foi possível iniciar o microfone.";
+      showAlert(microphoneCaptureStatus.textContent, "error");
+    }
+  }
+
+  async function stopMicrophoneAnalysis() {
+    try {
+      const response = await chrome.runtime.sendMessage({ action: "STOP_MICROPHONE_CAPTURE" });
+      if (!response?.success) {
+        showAlert(response?.error || "Não foi possível parar a captura do microfone.", "error");
+        return;
+      }
+      isMonitoring = false;
+      updateButtonUI(false);
+      microphoneCaptureStatus.textContent = "Microfone desligado.";
+      countdownDisplay.textContent = "Captura parada.";
+    } catch (error) {
+      showAlert(`Não foi possível parar o microfone: ${error.message || "erro desconhecido"}`, "error");
+    }
+  }
+
   /**
    * Sincroniza o estado inicial do popup com o content.js
    */
   async function syncWithActiveTabStatus() {
+    const microphoneState = await chrome.runtime.sendMessage({ action: "GET_MICROPHONE_CAPTURE_STATUS" })
+      .catch(() => ({ running: false }));
+    if (microphoneState?.running) {
+      captureMode = "microphone";
+      captureModeMicrophone.checked = true;
+      captureModeTranscript.checked = false;
+      microphoneCapturePreview.classList.remove("hidden");
+      isMonitoring = true;
+      microphoneCaptureStatus.textContent = microphoneState.status || "Microfone ativo.";
+      microphoneTranscriptPreview.textContent = microphoneState.summary || "Aguardando fala...";
+      countdownDisplay.textContent = Number.isFinite(microphoneState.remaining)
+        ? `Próxima análise em ${microphoneState.remaining}s (${microphoneState.interval}s)...`
+        : "Captura do microfone ativa.";
+      updateButtonUI(true);
+      return;
+    }
+    if (captureMode === "microphone" && microphoneState?.status) {
+      microphoneCaptureStatus.textContent = microphoneState.status;
+      if (microphoneState.error) showAlert(microphoneState.error, "error");
+    }
+
+    const storedSession = await chrome.storage.local.get(["transcription_monitoring_session"]);
+    if (storedSession.transcription_monitoring_session?.active) {
+      captureMode = "transcript";
+      captureModeTranscript.checked = true;
+      captureModeMicrophone.checked = false;
+      isMonitoring = true;
+      selectedInterval = storedSession.transcription_monitoring_session.interval || selectedInterval;
+      updateButtonUI(true);
+      countdownDisplay.textContent = "Transcrição ativa. A análise retoma quando houver vídeo do YouTube.";
+    }
+
     const tab = await getActiveYouTubeTab();
     if (!tab) return;
 
@@ -237,13 +398,23 @@ document.addEventListener("DOMContentLoaded", async () => {
   function updateButtonUI(running) {
     if (running) {
       toggleStreamBtn.className = "btn-cta btn-stop";
-      btnText.textContent = "⏹️ Parar Monitoramento";
+      btnText.textContent = captureMode === "microphone"
+        ? "⏹️ Parar análise pelo microfone"
+        : "⏹️ Parar Monitoramento";
+      captureModeTranscript.disabled = true;
+      captureModeMicrophone.disabled = true;
       const playIcon = toggleStreamBtn.querySelector(".play-icon");
       if (playIcon) playIcon.classList.add("hidden");
       liveStatusContainer.classList.remove("hidden");
     } else {
       toggleStreamBtn.className = "btn-cta btn-start";
-      btnText.textContent = selectedInterval === 60 ? "Iniciar Monitoramento a cada 1min" : "Iniciar Monitoramento a cada 30s";
+      captureModeTranscript.disabled = false;
+      captureModeMicrophone.disabled = false;
+      if (captureMode === "microphone") {
+        btnText.textContent = "Iniciar análise pelo microfone";
+      } else {
+        btnText.textContent = selectedInterval === 60 ? "Iniciar transcrição a cada 1min" : "Iniciar transcrição a cada 30s";
+      }
       const playIcon = toggleStreamBtn.querySelector(".play-icon");
       if (playIcon) playIcon.classList.remove("hidden");
       liveStatusContainer.classList.add("hidden");
@@ -330,6 +501,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     topBar.appendChild(verdictBadge);
     card.appendChild(topBar);
 
+    const confidence = document.createElement("p");
+    confidence.className = "confidence-text";
+    confidence.textContent = Number.isFinite(item.confianca)
+      ? `Confiança estimada da análise: ${item.confianca}%`
+      : "Confiança não estimada (modo de demonstração/contingência).";
+    card.appendChild(confidence);
+
     const claim = document.createElement("blockquote");
     claim.className = "claim-quote";
     claim.textContent = `"${item.afirmacao_destaque || "Fala sob análise"}"`;
@@ -345,7 +523,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     sourcesSec.className = "sources-section";
     const sourcesLabel = document.createElement("div");
     sourcesLabel.className = "sources-label";
-    sourcesLabel.textContent = "Fontes & Links Diretos para Consulta:";
+    sourcesLabel.textContent = "Pesquisar a fala em fontes confiáveis:";
     sourcesSec.appendChild(sourcesLabel);
 
     const sourcesList = document.createElement("div");
@@ -358,7 +536,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         link.href = source.url || "#";
         link.target = "_blank";
         link.rel = "noopener noreferrer";
-        link.innerHTML = `🔗 ${source.nome || "Verificar Fonte"}`;
+        link.textContent = `🔗 ${source.nome || "Verificar Fonte"}`;
 
         link.addEventListener("click", (e) => {
           e.preventDefault();

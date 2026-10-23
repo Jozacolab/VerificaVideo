@@ -22,6 +22,7 @@ let monitoringIntervalSec = 30; // 30 ou 60 segundos
 let countdownRemaining = 30;
 let monitoringTimer = null;
 let showFloatingHUD = true;
+let fallbackToMicrophone = false;
 
 /**
  * Normaliza e limpa espaços
@@ -156,6 +157,7 @@ function getOrCreateFloatingHUD() {
       <div class="vv-hud-title">
         <span class="vv-dot"></span>
         <span class="vv-hud-name">VerificaVídeo AO VIVO</span>
+        <span id="vv-hud-timer" class="vv-hud-timer" title="Tempo até a próxima análise">⏱ --:--</span>
       </div>
       <div class="vv-hud-controls">
         <button id="vv-hud-toggle-btn" title="Minimizar">_</button>
@@ -164,12 +166,16 @@ function getOrCreateFloatingHUD() {
     </div>
     <div id="vv-hud-body" class="vv-hud-body">
       <div class="vv-hud-ticker" id="vv-hud-ticker">Aguardando play no vídeo...</div>
+      <div id="vv-hud-capture-summary" class="vv-hud-capture-summary hidden">
+        <p id="vv-hud-captured-text" class="vv-hud-captured-text"></p>
+      </div>
       <div id="vv-hud-result-box" class="vv-hud-result hidden">
         <div class="vv-hud-topline">
           <span id="vv-hud-time" class="vv-hud-time">⏱️ 00:00</span>
           <span id="vv-hud-badge" class="vv-hud-badge">[FATO]</span>
         </div>
         <p id="vv-hud-claim" class="vv-hud-claim">"Alegação analisada..."</p>
+        <p id="vv-hud-confidence" class="vv-hud-confidence"></p>
         <div id="vv-hud-sources" class="vv-hud-sources"></div>
       </div>
     </div>
@@ -180,7 +186,8 @@ function getOrCreateFloatingHUD() {
 
   // Eventos de minimizar e fechar
   hud.querySelector("#vv-hud-close-btn").addEventListener("click", () => {
-    hud.remove();
+    showFloatingHUD = false;
+    hud.classList.add("vv-hud-hidden");
   });
 
   hud.querySelector("#vv-hud-toggle-btn").addEventListener("click", () => {
@@ -232,6 +239,15 @@ function injectHUDStyles() {
       color: #93c5fd;
       letter-spacing: 0.3px;
     }
+    .vv-hud-timer {
+      padding: 2px 5px;
+      border: 1px solid #334155;
+      border-radius: 5px;
+      color: #bfdbfe;
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
     .vv-dot {
       width: 7px;
       height: 7px;
@@ -260,6 +276,15 @@ function injectHUDStyles() {
     }
     .vv-hud-body {
       padding: 10px 12px;
+    }
+    .vv-hud-captured-text {
+      width: 100%;
+      max-height: 60px;
+      margin: 0;
+      overflow-y: auto;
+      color: #cbd5e1;
+      font-size: 10px;
+      line-height: 1.4;
     }
     .vv-hud-ticker {
       font-size: 11px;
@@ -303,6 +328,12 @@ function injectHUDStyles() {
       padding-left: 6px;
       margin: 0;
     }
+    .vv-hud-confidence {
+      margin: 6px 0;
+      color: #93c5fd;
+      font-size: 10px;
+      font-weight: 600;
+    }
     .vv-hud-sources {
       display: flex;
       flex-wrap: wrap;
@@ -334,6 +365,22 @@ function updateHUDStatus(msg) {
   if (ticker) ticker.textContent = msg;
 }
 
+function updateHUDTimer(seconds, title = "Tempo até a próxima análise") {
+  const hud = document.getElementById("verifica-video-hud");
+  const timer = hud?.querySelector("#vv-hud-timer");
+  if (!timer) return;
+
+  if (!Number.isFinite(seconds)) {
+    timer.textContent = "⏱ --:--";
+  } else {
+    const remaining = Math.max(0, Math.floor(seconds));
+    const minutes = Math.floor(remaining / 60).toString().padStart(2, "0");
+    const secondsPart = (remaining % 60).toString().padStart(2, "0");
+    timer.textContent = `⏱ ${minutes}:${secondsPart}`;
+  }
+  timer.title = title;
+}
+
 function normalizeVerdict(rawVerdict) {
   if (!rawVerdict) return "DUVIDOSO";
   const v = String(rawVerdict).toUpperCase().trim();
@@ -353,6 +400,7 @@ function updateHUDResult(data) {
   const timeEl = hud.querySelector("#vv-hud-time");
   const badgeEl = hud.querySelector("#vv-hud-badge");
   const claimEl = hud.querySelector("#vv-hud-claim");
+  const confidenceEl = hud.querySelector("#vv-hud-confidence");
   const sourcesEl = hud.querySelector("#vv-hud-sources");
 
   resBox.classList.remove("hidden");
@@ -372,6 +420,9 @@ function updateHUDResult(data) {
   }
 
   claimEl.textContent = `"${data.afirmacao_destaque || "Fala sob verificação"}"`;
+  confidenceEl.textContent = Number.isFinite(data.confianca)
+    ? `Confiança estimada da análise: ${data.confianca}%`
+    : "Confiança não estimada (modo de demonstração/contingência).";
 
   sourcesEl.innerHTML = "";
   if (Array.isArray(data.fontes_recomendadas)) {
@@ -394,9 +445,19 @@ function startContinuousMonitoring(intervalSeconds = 30) {
   isMonitoring = true;
   monitoringIntervalSec = intervalSeconds;
   countdownRemaining = intervalSeconds;
+  chrome.storage.local.set({
+    transcription_monitoring_session: {
+      active: true,
+      interval: intervalSeconds,
+      showHUD: showFloatingHUD,
+      fallbackToMicrophone
+    }
+  }).catch((error) => console.warn("[VerificaVídeo] Não foi possível salvar a sessão de transcrição.", error));
+  updateHUDTimer(countdownRemaining);
 
   if (showFloatingHUD) {
     getOrCreateFloatingHUD();
+    updateHUDTimer(countdownRemaining);
     updateHUDStatus("Monitoramento ativado! Dê play no vídeo.");
   }
 
@@ -413,6 +474,7 @@ function startContinuousMonitoring(intervalSeconds = 30) {
     // Se o vídeo estiver pausado, aguarda o usuário dar play
     if (!video || video.paused) {
       updateHUDStatus("⏸️ Vídeo pausado. Dê play para continuar checando...");
+      updateHUDTimer(countdownRemaining, "Vídeo pausado; contagem congelada");
       chrome.runtime.sendMessage({
         action: "MONITORING_TICK",
         status: "paused",
@@ -422,6 +484,7 @@ function startContinuousMonitoring(intervalSeconds = 30) {
     }
 
     countdownRemaining--;
+    updateHUDTimer(countdownRemaining);
 
     // Notifica o popup e atualiza HUD
     updateHUDStatus(`Próxima checagem em ${countdownRemaining}s (${monitoringIntervalSec}s)...`);
@@ -435,6 +498,7 @@ function startContinuousMonitoring(intervalSeconds = 30) {
     // Quando o tempo atinge 0, executa a checagem da fatia de tempo
     if (countdownRemaining <= 0) {
       countdownRemaining = monitoringIntervalSec;
+      updateHUDTimer(countdownRemaining);
       await processIntervalCheck();
     }
   }, 1000);
@@ -478,6 +542,9 @@ async function processIntervalCheck() {
 function stopContinuousMonitoring() {
   isMonitoring = false;
   clearInterval(monitoringTimer);
+  chrome.storage.local.set({ transcription_monitoring_session: { active: false } })
+    .catch((error) => console.warn("[VerificaVídeo] Não foi possível salvar a sessão parada.", error));
+  updateHUDTimer(Number.NaN, "Monitoramento parado");
   updateHUDStatus("Monitoramento parado.");
 }
 
@@ -486,6 +553,27 @@ function stopContinuousMonitoring() {
    ========================================================== */
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === "MICROPHONE_CAPTURE_STATUS") {
+    showFloatingHUD = true;
+    const hud = getOrCreateFloatingHUD();
+    hud.classList.remove("vv-hud-hidden");
+    hud.querySelector("#vv-hud-capture-summary").classList.remove("hidden");
+    hud.querySelector("#vv-hud-ticker").textContent = request.status || "Microfone ativo.";
+    const summary = hud.querySelector("#vv-hud-captured-text");
+    summary.textContent = request.summary ? `Capturado: ${request.summary}` : "";
+    updateHUDTimer(Number.isFinite(request.remaining) ? request.remaining : Number.NaN);
+    sendResponse({ success: true });
+    return true;
+  }
+
+  if (request.action === "NEW_CHECK_RESULT" && request.data?.origem === "microfone") {
+    showFloatingHUD = true;
+    updateHUDResult(request.data);
+    updateHUDStatus("Trecho do microfone analisado.");
+    sendResponse({ success: true });
+    return true;
+  }
+
   if (request.action === "START_MONITORING") {
     // Limpa estado anterior para iniciar a nova sessão
     captionsWithTimestamps = [];
@@ -496,6 +584,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     showFloatingHUD = request.showHUD !== false;
+    if (typeof request.fallbackToMicrophone === "boolean") {
+      fallbackToMicrophone = request.fallbackToMicrophone;
+    }
     startContinuousMonitoring(request.interval || 30);
     sendResponse({ success: true });
     return true;
@@ -535,6 +626,34 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local" || !changes.transcription_monitoring_session) return;
+  const session = changes.transcription_monitoring_session.newValue;
+  if (!session?.active) {
+    if (isMonitoring) stopContinuousMonitoring();
+    return;
+  }
+
+  showFloatingHUD = session.showHUD !== false;
+  fallbackToMicrophone = Boolean(session.fallbackToMicrophone);
+  if (!isMonitoring) {
+    startContinuousMonitoring(session.interval || 30);
+  } else if (session.interval && session.interval !== monitoringIntervalSec) {
+    monitoringIntervalSec = session.interval;
+    countdownRemaining = session.interval;
+    updateHUDTimer(countdownRemaining);
+  }
+});
+
 // Inicialização
 startCaptionObserver();
+chrome.storage.local.get(["transcription_monitoring_session"]).then((stored) => {
+  const session = stored.transcription_monitoring_session;
+  if (!session?.active || isMonitoring) return;
+  showFloatingHUD = session.showHUD !== false;
+  fallbackToMicrophone = Boolean(session.fallbackToMicrophone);
+  startContinuousMonitoring(session.interval || 30);
+}).catch((error) => {
+  console.warn("[VerificaVídeo] Não foi possível restaurar a sessão de transcrição.", error);
+});
 console.log("[VerificaVídeo] Motor contínuo e HUD do YouTube inicializados.");
